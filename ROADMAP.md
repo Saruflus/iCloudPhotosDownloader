@@ -8,19 +8,19 @@ Planned improvements. Effort: **S** small · **M** medium · **L** large.
 - [ ] **Album search bar** (client-side filter over album names). **S**
 - [ ] **Thumbnail HTTP cache headers** on `/api/assets/{id}/thumbnail` → browser
       caches, instant re-display. **S**
+- [ ] **Album display sorting** sort the thumbs by date. **M**
 - [ ] **Async album counts** — don't block the album list on `len(album)` (39
       queries); load counts lazily / in the background. **M**
 
 ## Lot 2 — Features
-- [ ] **Schedule page** in the UI (the scheduler engine already runs; only the
-      screen is missing). **M**
+- [ ] **Schedule page** in the UI (the scheduler engine already runs and can be used using CLI; only the webUI is missing). **M**
 - [ ] **Config/settings page** (concurrency, timezone, API secret, paths). **M**
 - [ ] **Shared albums** (pyicloud `shared_streams`). **M**
 - [ ] **Date-range filter** (only download photos after a date). **M**
-- [ ] **Dry-run / preview** ("X to download / Y already present") before launch. **M**
+- [ ] **Dry-run / preview** ("X to download / Y already downloaded") before launch. **M**
 
 ## Lot 3 — Big-sync comfort & performance
-- [ ] **Virtualized asset grid** (react-window) for huge albums (22k+). **M**
+- [ ] **Virtualized asset grid** (react-window) for huge albums (1k+). **M**
 - [ ] **Parallel thumbnail prefetch** on album open. **M**
 - [ ] **Disk thumbnail cache** (survives restart, beyond Redis TTL). **M**
 - [ ] **Persistent PhotoAsset cache** (no thumbnail 404 after a restart before
