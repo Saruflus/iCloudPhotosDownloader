@@ -1,0 +1,29 @@
+# Secrets — never commit (holds DB/Redis creds; see Security Notes in plan)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Local data / iCloud session (sensitive — equivalent to the account password)
+config/
+downloads/
+icloud-session/
+**/icloud-session/
+_spike_thumb_*
+*.part
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

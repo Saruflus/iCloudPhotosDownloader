@@ -1,0 +1,11 @@
+.venv/
+venv/
+tests/
+test_icloud.py
+verify_icloud.py
+icloud-session/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

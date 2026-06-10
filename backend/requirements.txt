@@ -1,0 +1,34 @@
+# Web / API
+fastapi>=0.111
+uvicorn[standard]>=0.30
+websockets>=12
+pydantic-settings>=2.2
+
+# Database
+sqlalchemy[asyncio]>=2.0
+alembic>=1.13
+asyncpg>=0.29        # async driver (FastAPI, D1)
+psycopg[binary]>=3.1 # sync driver (Celery/scheduler/migrations, D1)
+greenlet>=3.0        # required by SQLAlchemy async
+
+# Task queue / cache / realtime
+celery[redis]>=5.3
+redis>=5.0
+
+# Scheduling
+APScheduler>=3.10
+croniter>=2.0        # next_run_at computation
+
+# iCloud engine (D12): original pyicloud library — importable, modern 2FA.
+# (icloudpd is now a CLI-only binary; if used at all it's an optional shell-out
+#  fallback installed separately, NOT imported.)
+pyicloud>=2.6
+
+# EXIF / image handling (D5)
+Pillow>=10.3
+pillow-heif>=0.16    # HEIC EXIF
+piexif>=1.1          # JPEG/TIFF EXIF
+ExifRead>=3.0        # RAW EXIF
+
+# CLI
+typer>=0.12
