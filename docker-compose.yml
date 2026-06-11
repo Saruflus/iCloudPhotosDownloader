@@ -6,7 +6,9 @@ services:
     image: icloud-nas-sync-backend
     container_name: icloud-sync-backend
     restart: unless-stopped
-    user: "99:100"   # Unraid nobody:users — files land with NAS-visible ownership
+    # No `user:` — the entrypoint starts as root, chowns /config & /downloads to
+    # PUID:PGID (default 99:100 = Unraid nobody:users), then drops privileges.
+    # Override via PUID/PGID/UMASK in .env if your shares use different ids.
     ports:
       - "8000:8000"
     env_file: .env
@@ -19,10 +21,9 @@ services:
     build: ./backend
     container_name: icloud-sync-celery
     restart: unless-stopped
-    user: "99:100"   # the worker writes the photos → must own them as nobody:users
-    # umask 0002 → dirs 775 / files 664 (group 'users' writable) so the files are
-    # movable/editable over SMB, not just readable.
-    command: sh -c "umask 0002 && exec celery -A app.workers.tasks worker --loglevel=info --concurrency=${DOWNLOAD_CONCURRENCY:-4}"
+    # No `user:` — entrypoint drops to PUID:PGID and sets umask 0002 (dirs 775 /
+    # files 664) so the photos are movable/editable over SMB, not just readable.
+    command: celery -A app.workers.tasks worker --loglevel=info --concurrency=${DOWNLOAD_CONCURRENCY:-4}
     env_file: .env
     volumes:
       - /mnt/user/photos:/downloads
@@ -35,7 +36,7 @@ services:
     build: ./backend
     container_name: icloud-sync-scheduler
     restart: unless-stopped
-    user: "99:100"
+    # No `user:` — entrypoint drops to PUID:PGID (default 99:100).
     command: python -m app.scheduler_main
     env_file: .env
     volumes:
