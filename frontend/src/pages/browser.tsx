@@ -14,6 +14,8 @@ function badges(a: Asset): { label: string; cls: string }[] {
   const mt = (a.media_type || "").toUpperCase();
   if (mt === "HEIC") out.push({ label: "HEIC", cls: "bg-slate-700" });
   if (RAW.includes(mt)) out.push({ label: "RAW", cls: "bg-purple-700" });
+  // RAW companion (resOriginalAlt) on a non-RAW primary, e.g. JPEG+RAW pairs.
+  else if (a.has_raw_version) out.push({ label: "RAW", cls: "bg-purple-700" });
   if (VIDEO.includes(mt)) out.push({ label: "VIDEO", cls: "bg-rose-700" });
   if (a.is_live_photo) out.push({ label: "LIVE", cls: "bg-amber-600" });
   if (a.has_edited_version) out.push({ label: "EDIT", cls: "bg-emerald-700" });

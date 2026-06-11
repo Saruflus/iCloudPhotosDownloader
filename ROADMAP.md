@@ -3,9 +3,9 @@
 Planned improvements. Effort: **S** small · **M** medium · **L** large.
 
 ## Lot 1 — Quick wins (UX, low effort)
-- [ ] **RAW badge** for photos that have a RAW companion (`resOriginalAlt`) — add a
+- [x] **RAW badge** for photos that have a RAW companion (`resOriginalAlt`) — add a
       `has_raw_version` flag to the asset metadata + purple badge in the grid. **S**
-- [ ] **Album search bar** (client-side filter over album names). **S**
+- [x] **Album search bar** (client-side filter over album names). **S** _(shipped with the Schedule work via the shared `AlbumChecklist`)_
 - [ ] **Thumbnail HTTP cache headers** on `/api/assets/{id}/thumbnail` → browser
       caches, instant re-display. **S**
 - [ ] **Album display sorting** sort the thumbs by date. **M**
@@ -13,7 +13,7 @@ Planned improvements. Effort: **S** small · **M** medium · **L** large.
       queries); load counts lazily / in the background. **M**
 
 ## Lot 2 — Features
-- [ ] **Schedule page** in the UI (the scheduler engine already runs and can be used using CLI; only the webUI is missing). **M**
+- [x] **Schedule page** in the UI (the scheduler engine already runs and can be used using CLI; only the webUI is missing). **M**
 - [ ] **Config/settings page** (concurrency, timezone, API secret, paths). **M**
 - [ ] **Shared albums** (pyicloud `shared_streams`). **M**
 - [ ] **Date-range filter** (only download photos after a date). **M**

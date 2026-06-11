@@ -39,6 +39,7 @@ class FakeICloud:
                 created_at=datetime(2026, 6, 7, 16, 4, tzinfo=timezone.utc),
                 is_live_photo=False,
                 has_edited_version=True,
+                has_raw_version=True,
             )
         ]
 
@@ -83,6 +84,7 @@ def run() -> None:
         assets = client.get("/api/albums/Fuji/assets?offset=0&limit=10").json()
         check("assets listed", len(assets) == 1 and assets[0]["asset_id"] == "A1")
         check("has_edited_version surfaced", assets[0]["has_edited_version"] is True)
+        check("has_raw_version surfaced", assets[0]["has_raw_version"] is True)
         check("thumbnail_url built", assets[0]["thumbnail_url"] == "/api/assets/A1/thumbnail")
 
         check("unknown album → 404", client.get("/api/albums/Nope/assets").status_code == 404)

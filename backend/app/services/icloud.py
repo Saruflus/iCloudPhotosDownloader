@@ -45,6 +45,7 @@ class AssetMetadata:
     created_at: datetime | None  # tz-aware
     is_live_photo: bool
     has_edited_version: bool
+    has_raw_version: bool
 
 
 @dataclass
@@ -243,6 +244,20 @@ class ICloudService:
         except Exception:
             return False
 
+    @staticmethod
+    def _has_raw(photo) -> bool:
+        """True iff the asset has a RAW companion (resOriginalAlt, D6).
+
+        pyicloud's PHOTO_VERSION_LOOKUP maps the friendly key 'alternative' to the
+        resOriginalAlt prefix; the resource is only present in `versions` when the
+        master record actually carries that rendition. No network — `versions` is
+        built from the already-fetched CK records.
+        """
+        try:
+            return "alternative" in (photo.versions or {})
+        except Exception:
+            return False
+
     def _metadata(self, photo) -> AssetMetadata:
         return AssetMetadata(
             asset_id=photo.id,
@@ -252,6 +267,7 @@ class ICloudService:
             created_at=getattr(photo, "created", None),
             is_live_photo=bool(getattr(photo, "is_live_photo", False)),
             has_edited_version=self._has_edited(photo),
+            has_raw_version=self._has_raw(photo),
         )
 
     def _rendition_ext(self, photo, version: str) -> str:

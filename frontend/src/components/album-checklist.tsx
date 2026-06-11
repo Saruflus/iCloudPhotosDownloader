@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { filterAlbums } from "../lib/album-filter";
 import type { Album } from "../types";
 
 /** Album list with multi-select checkboxes and a name search box.
@@ -18,8 +19,7 @@ export default function AlbumChecklist({
   onOpen?: (name: string) => void;
 }) {
   const [q, setQ] = useState("");
-  const needle = q.trim().toLowerCase();
-  const filtered = needle ? albums.filter((a) => a.name.toLowerCase().includes(needle)) : albums;
+  const filtered = filterAlbums(albums, q);
 
   return (
     <div className="flex flex-col h-full">

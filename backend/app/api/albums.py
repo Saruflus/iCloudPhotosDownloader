@@ -36,6 +36,7 @@ class AssetOut(BaseModel):
     created_at: datetime | None
     is_live_photo: bool
     has_edited_version: bool
+    has_raw_version: bool
     thumbnail_url: str
 
 
@@ -66,6 +67,7 @@ async def album_assets(
             created_at=a.created_at,
             is_live_photo=a.is_live_photo,
             has_edited_version=a.has_edited_version,
+            has_raw_version=a.has_raw_version,
             thumbnail_url=f"/api/assets/{a.asset_id}/thumbnail",
         )
         for a in assets

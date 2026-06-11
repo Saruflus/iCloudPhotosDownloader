@@ -16,6 +16,7 @@ export interface Asset {
   created_at: string | null;
   is_live_photo: boolean;
   has_edited_version: boolean;
+  has_raw_version: boolean;
   thumbnail_url: string;
 }
 
