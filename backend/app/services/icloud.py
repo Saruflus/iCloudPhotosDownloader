@@ -27,12 +27,13 @@ from pathlib import Path
 from typing import Iterator
 
 from pyicloud import PyiCloudService
-from pyicloud.services.photos_cloudkit.mappers import build_photo_resource
+from pyicloud.services.photos_cloudkit.mappers import build_photo_resource, record_field_value
 
 LOGGER = logging.getLogger(__name__)
 
 EDITED_RES_FIELD = "resJPEGFullRes"  # present in the asset record iff edited (D6)
 EDITED_PREFIX = "resJPEGFull"
+RAW_RES_FIELD = "resOriginalAltRes"  # present in the master record iff a RAW companion exists
 _STREAM_CHUNK = 1 << 20  # 1 MiB
 
 
@@ -248,13 +249,19 @@ class ICloudService:
     def _has_raw(photo) -> bool:
         """True iff the asset has a RAW companion (resOriginalAlt, D6).
 
-        pyicloud's PHOTO_VERSION_LOOKUP maps the friendly key 'alternative' to the
-        resOriginalAlt prefix; the resource is only present in `versions` when the
-        master record actually carries that rendition. No network — `versions` is
-        built from the already-fetched CK records.
+        Mirrors ``_has_edited``: read the single discriminator field straight off
+        the record rather than going through ``photo.versions``. ``versions``
+        eagerly builds *every* rendition resource, so one unrelated build failure
+        would be swallowed and silently suppress the badge. The RAW token lives in
+        the *master* record (``resOriginalAltRes``); pyicloud requests it in
+        PHOTO_DESIRED_KEYS, so it is already present at listing time — no network.
+        ``record_field_value`` handles both typed CKRecord and legacy-dict records.
         """
+        rec = getattr(photo, "_master_record", None)
+        if rec is None:
+            return False
         try:
-            return "alternative" in (photo.versions or {})
+            return record_field_value(rec, RAW_RES_FIELD) is not None
         except Exception:
             return False
 
