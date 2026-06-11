@@ -5,6 +5,7 @@ import Nav from "./components/nav";
 import AuthPage from "./pages/auth";
 import BrowserPage from "./pages/browser";
 import JobsPage from "./pages/jobs";
+import SchedulePage from "./pages/schedule";
 import type { AuthStatus } from "./types";
 
 export default function App() {
@@ -44,6 +45,7 @@ export default function App() {
         />
         <Route path="/" element={authed ? <BrowserPage /> : <Navigate to="/auth" replace />} />
         <Route path="/jobs" element={authed ? <JobsPage /> : <Navigate to="/auth" replace />} />
+        <Route path="/schedule" element={authed ? <SchedulePage /> : <Navigate to="/auth" replace />} />
         <Route path="*" element={<Navigate to={authed ? "/" : "/auth"} replace />} />
       </Routes>
     </div>

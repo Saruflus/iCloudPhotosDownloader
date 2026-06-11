@@ -15,6 +15,9 @@ export default function Nav({ authed, onLogout }: { authed: boolean; onLogout: (
           <NavLink to="/jobs" className={({ isActive }) => linkCls(isActive)}>
             Jobs
           </NavLink>
+          <NavLink to="/schedule" className={({ isActive }) => linkCls(isActive)}>
+            Schedule
+          </NavLink>
           <button
             onClick={onLogout}
             className="ml-auto text-sm text-slate-500 hover:text-red-600"

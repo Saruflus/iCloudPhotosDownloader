@@ -1,5 +1,5 @@
 import { API_BASE, getSecret } from "./config";
-import type { Album, Asset, AuthStatus, CreateJobBody, Job } from "./types";
+import type { Album, Asset, AuthStatus, CreateJobBody, Job, Schedule, ScheduleBody } from "./types";
 
 async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { ...(opts.headers as Record<string, string>) };
@@ -43,4 +43,10 @@ export const api = {
     req<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
   cancelJob: (id: number) => req<{ cancelled: boolean }>(`/api/jobs/${id}`, { method: "DELETE" }),
   retryFailed: (id: number) => req<Job>(`/api/jobs/${id}/retry-failed`, { method: "POST" }),
+
+  getSchedule: () => req<Schedule | null>("/api/schedule"),
+  putSchedule: (body: ScheduleBody) =>
+    req<Schedule>("/api/schedule", { method: "PUT", body: JSON.stringify(body) }),
+  toggleSchedule: (enabled: boolean) =>
+    req<Schedule>("/api/schedule/toggle", { method: "POST", body: JSON.stringify({ enabled }) }),
 };

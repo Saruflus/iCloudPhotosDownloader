@@ -64,3 +64,19 @@ export type WsEvent =
   | { type: "progress"; downloaded: number; skipped: number; failed: number; total: number; current_file?: string }
   | { type: "log"; level: string; message: string }
   | { type: "done"; status: string };
+
+export interface Schedule {
+  id: number;
+  cron_expression: string;
+  // opaque JSON config (same fields as CreateJobBody)
+  job_config: Record<string, any>;
+  enabled: boolean;
+  last_run_at: string | null;
+  next_run_at: string | null;
+}
+
+export interface ScheduleBody {
+  cron_expression: string;
+  job_config: Record<string, any>;
+  enabled: boolean;
+}
