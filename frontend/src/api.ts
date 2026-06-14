@@ -1,5 +1,7 @@
 import { API_BASE, getSecret } from "./config";
-import type { Album, Asset, AuthStatus, CreateJobBody, Job, Schedule, ScheduleBody } from "./types";
+import type {
+  Album, AppSettings, Asset, AuthStatus, CreateJobBody, Job, JobPreview, Schedule, ScheduleBody,
+} from "./types";
 
 async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = { ...(opts.headers as Record<string, string>) };
@@ -34,6 +36,8 @@ export const api = {
   logout: () => req<{ success: boolean }>("/api/auth/logout", { method: "POST" }),
 
   albums: () => req<Album[]>("/api/albums"),
+  albumCount: (name: string) =>
+    req<{ name: string; asset_count: number | null }>(`/api/albums/${encodeURIComponent(name)}/count`),
   assets: (name: string, offset: number, limit: number) =>
     req<Asset[]>(`/api/albums/${encodeURIComponent(name)}/assets?offset=${offset}&limit=${limit}`),
 
@@ -41,12 +45,27 @@ export const api = {
   job: (id: number) => req<Job>(`/api/jobs/${id}`),
   createJob: (body: CreateJobBody) =>
     req<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
+  previewJob: (body: CreateJobBody) =>
+    req<JobPreview>("/api/jobs/preview", { method: "POST", body: JSON.stringify(body) }),
   cancelJob: (id: number) => req<{ cancelled: boolean }>(`/api/jobs/${id}`, { method: "DELETE" }),
   retryFailed: (id: number) => req<Job>(`/api/jobs/${id}/retry-failed`, { method: "POST" }),
 
-  getSchedule: () => req<Schedule | null>("/api/schedule"),
-  putSchedule: (body: ScheduleBody) =>
-    req<Schedule>("/api/schedule", { method: "PUT", body: JSON.stringify(body) }),
-  toggleSchedule: (enabled: boolean) =>
-    req<Schedule>("/api/schedule/toggle", { method: "POST", body: JSON.stringify({ enabled }) }),
+  tokens: () => req<{ id: string; label: string; example: string }[]>("/api/tokens"),
+
+  getSettings: () => req<AppSettings>("/api/settings"),
+  putSettings: (body: Partial<Pick<AppSettings, "download_concurrency" | "max_retries" | "local_timezone" | "thumbnail_cache_ttl">>) =>
+    req<AppSettings>("/api/settings", { method: "PUT", body: JSON.stringify(body) }),
+  resetSetting: (key: string) =>
+    req<AppSettings>(`/api/settings/${key}`, { method: "DELETE" }),
+
+  // Multiple schedules (Lot 4)
+  listSchedules: () => req<Schedule[]>("/api/schedules"),
+  createSchedule: (body: ScheduleBody) =>
+    req<Schedule>("/api/schedules", { method: "POST", body: JSON.stringify(body) }),
+  updateSchedule: (id: number, body: ScheduleBody) =>
+    req<Schedule>(`/api/schedules/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteSchedule: (id: number) =>
+    req<{ deleted: boolean }>(`/api/schedules/${id}`, { method: "DELETE" }),
+  toggleScheduleById: (id: number, enabled: boolean) =>
+    req<Schedule>(`/api/schedules/${id}/toggle`, { method: "POST", body: JSON.stringify({ enabled }) }),
 };

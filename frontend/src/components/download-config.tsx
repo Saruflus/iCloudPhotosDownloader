@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { api } from "../api";
 import { TOKENS } from "../config";
 
 export interface DownloadConfigValue {
@@ -6,6 +8,8 @@ export interface DownloadConfigValue {
   fanout: boolean;
   force: boolean;
   templateStr: string;
+  dateFrom: string; // "YYYY-MM-DD" or "" (no lower bound)
+  dateTo: string; // "YYYY-MM-DD" or "" (no upper bound)
 }
 
 export const DEFAULT_CONFIG: DownloadConfigValue = {
@@ -14,7 +18,20 @@ export const DEFAULT_CONFIG: DownloadConfigValue = {
   fanout: true,
   force: false,
   templateStr: "{year}/{month}/{album}",
+  dateFrom: "",
+  dateTo: "",
 };
+
+/** Date-range fields for the jobs API. The "to" day is inclusive (end of day UTC). */
+export function dateRangeToApi(c: Pick<DownloadConfigValue, "dateFrom" | "dateTo">): {
+  date_from: string | null;
+  date_to: string | null;
+} {
+  return {
+    date_from: c.dateFrom ? `${c.dateFrom}T00:00:00Z` : null,
+    date_to: c.dateTo ? `${c.dateTo}T23:59:59Z` : null,
+  };
+}
 
 export function templateToArray(s: string): string[] {
   return s.split("/").map((x) => x.trim()).filter(Boolean);
@@ -48,6 +65,13 @@ export default function DownloadConfig({
   const set = (patch: Partial<DownloadConfigValue>) => onChange({ ...value, ...patch });
   const setFilter = (k: keyof DownloadConfigValue["filters"], on: boolean) =>
     onChange({ ...value, filters: { ...value.filters, [k]: on } });
+
+  // Token chips come from the backend (single source of truth); the static
+  // list is only the offline/older-backend fallback.
+  const [tokens, setTokens] = useState(TOKENS);
+  useEffect(() => {
+    api.tokens().then(setTokens).catch(() => {});
+  }, []);
 
   return (
     <div className="text-sm">
@@ -88,6 +112,34 @@ export default function DownloadConfig({
         Force re-download
       </label>
 
+      <fieldset className="mb-4">
+        <legend className="text-xs font-semibold uppercase text-slate-400 mb-1">
+          Date range <span className="normal-case font-normal">(capture date, optional)</span>
+        </legend>
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={value.dateFrom}
+            onChange={(e) => set({ dateFrom: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          />
+          →
+          <input
+            type="date"
+            value={value.dateTo}
+            onChange={(e) => set({ dateTo: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          />
+        </div>
+        {(value.dateFrom || value.dateTo) && (
+          <p className="text-[11px] text-slate-500 mt-1">
+            Only photos captured {value.dateFrom ? `from ${value.dateFrom}` : ""}
+            {value.dateFrom && value.dateTo ? " " : ""}
+            {value.dateTo ? `until ${value.dateTo} (inclusive)` : ""}. Undated assets are excluded.
+          </p>
+        )}
+      </fieldset>
+
       <div>
         <span className="text-xs font-semibold uppercase text-slate-400">Folder template</span>
         <div className="flex flex-wrap gap-1 my-1">
@@ -102,7 +154,7 @@ export default function DownloadConfig({
           ))}
         </div>
         <div className="flex flex-wrap gap-1 my-1">
-          {TOKENS.map((t) => (
+          {tokens.map((t) => (
             <button
               key={t.id}
               title={t.example}

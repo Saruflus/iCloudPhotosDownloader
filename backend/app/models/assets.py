@@ -63,6 +63,20 @@ class DownloadedAsset(Base):
     last_verified_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     error_message: Mapped[str | None] = mapped_column(Text)
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The job that last wrote this asset (Lot 4 link; informational + retry scoping).
+    last_job_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+
+
+class AppSetting(Base):
+    """Runtime-overridable settings (Lot 2 settings page), one row per key.
+
+    Only a whitelisted subset of Settings can be overridden here; everything
+    else stays env-driven. Workers re-read overrides when each job starts."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class DownloadJob(Base):
@@ -84,6 +98,11 @@ class DownloadJob(Base):
     download_version: Mapped[str] = mapped_column(String, nullable=False, default="edited")  # D6
     album_fanout: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)  # D8
     force_redownload: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Only assets captured inside [date_from, date_to] (either side optional).
+    date_from: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    date_to: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    # 'download' (normal) or 'verify' (re-download files missing on disk, Lot 4).
+    job_type: Mapped[str] = mapped_column(String, nullable=False, default="download")
     total_assets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     downloaded_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -34,8 +34,33 @@ def _build_service():
     # Restore the iCloud session up front so unattended jobs can run (D2).
     get_icloud_service().try_restore()
 
+    from app.services.notify import build_notifier
+
+    def auth_ok() -> bool:
+        svc = get_icloud_service()
+        if svc.get_status()["authenticated"]:
+            return True
+        # The session may have expired since startup — one restore attempt
+        # before declaring the schedule blocked on 2FA (Lot 4).
+        return svc.try_restore()
+
     scheduler = AsyncIOScheduler()
-    return scheduler, SchedulerService(scheduler, session_factory, enqueue)
+    return scheduler, SchedulerService(
+        scheduler, session_factory, enqueue,
+        auth_ok=auth_ok, notifier=build_notifier(),
+    )
+
+
+HEARTBEAT_FILE = "/tmp/scheduler-heartbeat"
+
+
+def _touch_heartbeat() -> None:
+    """Liveness marker for the compose healthcheck (Lot 4)."""
+    try:
+        with open(HEARTBEAT_FILE, "w", encoding="utf-8") as fh:
+            fh.write("ok")
+    except OSError:
+        pass
 
 
 async def main() -> None:
@@ -43,6 +68,9 @@ async def main() -> None:
 
     scheduler, service = _build_service()
     service.load()
+    _touch_heartbeat()
+    scheduler.add_job(_touch_heartbeat, "interval", seconds=30,
+                      id="heartbeat", replace_existing=True)
     scheduler.start()
     LOGGER.info("Scheduler started")
 

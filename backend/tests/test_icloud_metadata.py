@@ -53,11 +53,20 @@ def _master(raw: bool) -> dict:
 
 
 class FakePhoto:
-    def __init__(self, *, raw: bool = False, edited: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        raw: bool = False,
+        edited: bool = False,
+        filename: str = "IMG_0001.HEIC",
+        item_type: str = "image",
+    ) -> None:
         self._master_record = _master(raw)
         self._asset_record = _FakeAssetRecord(
             {"resJPEGFullRes": {"value": {"size": 1}}} if edited else {}
         )
+        self.filename = filename
+        self.item_type = item_type
 
 
 def run() -> None:
@@ -82,9 +91,50 @@ def run() -> None:
 
     check("has_raw ignores a broken .versions", ICloudService._has_raw(BoomVersions()) is True)
 
+    # Fallback: no master record but `versions` exposes the alt rendition.
+    class VersionsOnly:
+        versions = {"original": {}, "alternative": {}}
+
+    check("has_raw fallback via versions", ICloudService._has_raw(VersionsOnly()) is True)
+
     # EDIT tag regression guard (unchanged behavior).
     check("has_edited True when resJPEGFullRes present", ICloudService._has_edited(FakePhoto(edited=True)) is True)
     check("has_edited False when absent", ICloudService._has_edited(FakePhoto(edited=False)) is False)
+
+    # media_category: classify_media buckets, item_type-aware (the worker filter
+    # and the UI badges must agree on these).
+    cat = ICloudService._media_category
+    check("RAF → RAW", cat(FakePhoto(filename="DSCF1234.RAF")) == "RAW")
+    check("CR3 → RAW", cat(FakePhoto(filename="IMG_0042.CR3")) == "RAW")
+    check("ARW → RAW", cat(FakePhoto(filename="DSC00099.arw")) == "RAW")
+    check("PEF → RAW (ext missing from old frontend list)", cat(FakePhoto(filename="x.PEF")) == "RAW")
+    check("HEIC → HEIC", cat(FakePhoto(filename="IMG_1.HEIC")) == "HEIC")
+    check("JPG → JPEG", cat(FakePhoto(filename="IMG_1.JPG")) == "JPEG")
+    check("MOV → Video", cat(FakePhoto(filename="clip.MOV", item_type="movie")) == "Video")
+    check("movie item_type wins over ext", cat(FakePhoto(filename="weird.bin", item_type="movie")) == "Video")
+    check("PNG → PNG", cat(FakePhoto(filename="shot.png")) == "PNG")
+    check("no extension → None", cat(FakePhoto(filename="DSCF1234")) is None)
+
+    # thumbnail_for falls back to a live lookup when the process cache is cold
+    # (Lot 3 — no more 404 after a backend restart).
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        svc = ICloudService(cookie_dir=tmp)
+
+        class FetchablePhoto:
+            id = "Z9"
+
+            @staticmethod
+            def download(version):
+                return b"thumb-bytes"
+
+        svc.fetch_asset = lambda aid: FetchablePhoto() if aid == "Z9" else None  # type: ignore
+        check("cold cache → fetch_asset path", svc.thumbnail_for("Z9") == b"thumb-bytes")
+        check("unknown id → None", svc.thumbnail_for("nope") is None)
+
+        svc2 = ICloudService(cookie_dir=tmp)
+        check("unauthenticated fetch_asset → None (no raise)", svc2.fetch_asset("any") is None)
 
     print(f"\nALL {PASSED} CHECKS PASSED ✓")
 

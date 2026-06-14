@@ -6,12 +6,14 @@ export interface AuthStatus {
 export interface Album {
   name: string;
   asset_count: number | null;
+  shared?: boolean;
 }
 
 export interface Asset {
   asset_id: string;
   filename: string;
   media_type: string | null;
+  media_category: string | null;
   file_size: number | null;
   created_at: string | null;
   is_live_photo: boolean;
@@ -52,6 +54,30 @@ export interface CreateJobBody {
   download_version: string;
   album_fanout: boolean;
   force_redownload: boolean;
+  date_from?: string | null;
+  date_to?: string | null;
+  job_type?: string; // "download" | "verify"
+}
+
+export interface JobPreview {
+  listed: number;
+  matching: number;
+  already_completed: number;
+  to_download: number;
+}
+
+export interface AppSettings {
+  download_concurrency: number;
+  max_retries: number;
+  local_timezone: string;
+  thumbnail_cache_ttl: number;
+  download_base_path: string;
+  icloud_config_dir: string;
+  api_secret_set: boolean;
+  notify_channels: string[];
+  notify_on_success: boolean;
+  notify_on_failure: boolean;
+  overridden: string[];
 }
 
 export interface Token {

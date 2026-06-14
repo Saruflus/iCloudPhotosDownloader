@@ -27,11 +27,12 @@ def check(label: str, cond: bool) -> None:
 
 
 class FakePhoto:
-    def __init__(self, id, filename, item_type="image"):
+    def __init__(self, id, filename, item_type="image", created=None):
         self.id = id
         self.filename = filename
         self.item_type = item_type
         self.is_live_photo = False
+        self.created = created
 
 
 class FakeICloud:
@@ -195,6 +196,59 @@ def run() -> None:
     check("status cancelled", runner.run(8) == "cancelled")
     check("nothing downloaded", len(dl.calls) == 0)
 
+    print("== date-range filter (Lot 2) ==")
+    from datetime import datetime, timezone
+
+    def dt(s):
+        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+
+    rec = JobRecord(id=12, selected_albums=["A"], folder_structure=["{album}"],
+                    date_from=dt("2024-01-01"), date_to=dt("2024-12-31"))
+    photos = [FakePhoto("in", "in.jpg", created=dt("2024-06-15")),
+              FakePhoto("before", "b.jpg", created=dt("2023-06-15")),
+              FakePhoto("after", "a.jpg", created=dt("2025-06-15")),
+              FakePhoto("undated", "u.jpg", created=None)]
+    store = FakeJobStore(rec)
+    dl = FakeDownloader()
+    runner, _ = make_runner(store, FakeICloud({"A": photos}), dl)
+    runner.run(12)
+    check("only in-range asset processed", set(dl.calls) == {"in"})
+
+    rec = JobRecord(id=13, selected_albums=["A"], folder_structure=["{album}"],
+                    date_from=dt("2024-01-01"))
+    store = FakeJobStore(rec)
+    dl = FakeDownloader()
+    runner, _ = make_runner(store, FakeICloud({"A": photos}), dl)
+    runner.run(13)
+    check("open-ended range (from only)", set(dl.calls) == {"in", "after"})
+
+    rec = JobRecord(id=14, selected_albums=["A"], folder_structure=["{album}"])
+    store = FakeJobStore(rec)
+    dl = FakeDownloader()
+    runner, _ = make_runner(store, FakeICloud({"A": photos}), dl)
+    runner.run(14)
+    check("no range → all (incl. undated)", set(dl.calls) == {"in", "before", "after", "undated"})
+
+    print("== naive datetimes are treated as UTC ==")
+    rec = JobRecord(id=15, selected_albums=["A"], folder_structure=["{album}"],
+                    date_from=datetime(2024, 1, 1))  # naive
+    store = FakeJobStore(rec)
+    dl = FakeDownloader()
+    runner, _ = make_runner(store, FakeICloud({"A": [FakePhoto("x", "x.jpg", created=dt("2024-06-01"))]}), dl)
+    runner.run(15)
+    check("naive bound compares fine", set(dl.calls) == {"x"})
+
+    print("== cancel during a long collect (10-20k listings) ==")
+    rec = JobRecord(id=11, selected_albums=["A"], folder_structure=["{album}"])
+    many = [FakePhoto(f"m{i}", f"m{i}.jpg") for i in range(450)]
+    store = FakeJobStore(rec, cancel=True)
+    dl = FakeDownloader()
+    runner, pub = make_runner(store, FakeICloud({"A": many}), dl)
+    check("cancelled mid-collect", runner.run(11) == "cancelled")
+    check("nothing downloaded after mid-collect cancel", len(dl.calls) == 0)
+    check("collect cancel logged",
+          any("listing" in str(e.get("message", "")) for e in pub.events))
+
     print("== lock held → abort ==")
     rec = JobRecord(id=9, selected_albums=["A"], folder_structure=["{album}"])
     store = FakeJobStore(rec)
@@ -204,6 +258,72 @@ def run() -> None:
                        icloud=FakeICloud({}), publisher=pub, sleep=lambda s: None)
     check("status failed on lock held", runner.run(9) == "failed")
     check("abort logged", any(e.get("level") == "error" for e in pub.events))
+
+    print("== verify mode (Lot 4) ==")
+    import pathlib
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        ok_file = pathlib.Path(td) / "ok.jpg"
+        ok_file.write_bytes(b"x")
+
+        class VStore:
+            def __init__(self):
+                self.reset: list = []
+                self.verified: list = []
+
+            def iter_completed(self):
+                yield "intact", [{"path": str(ok_file)}]
+                yield "broken", [{"path": str(pathlib.Path(td) / "missing.jpg")}]
+
+            def reset_to_pending(self, ids):
+                self.reset = list(ids)
+
+            def touch_verified(self, ids):
+                self.verified = list(ids)
+
+        vstore = VStore()
+        rec = JobRecord(id=20, selected_albums=["A"], folder_structure=["{album}"],
+                        job_type="verify")
+        store = FakeJobStore(rec)
+        dl = FakeDownloader()
+        dl.store = vstore  # the runner reads dl.store for the verify scan
+        runner, pub = make_runner(store, FakeICloud({"A": [FakePhoto("broken", "b.jpg")]}), dl)
+        check("verify job completes", runner.run(20) == "completed")
+        check("missing files reset to pending", vstore.reset == ["broken"])
+        check("intact files stamped verified", vstore.verified == ["intact"])
+        check("repair phase re-downloads scope", dl.calls["broken"] == 1)
+        check("verify summary logged",
+              any("Verify:" in str(e.get("message", "")) for e in pub.events))
+
+    print("== completion notification (Lot 4) ==")
+
+    class FNotif:
+        configured = True
+
+        def __init__(self):
+            self.sent = []
+
+        def send(self, title, message, level="info"):
+            self.sent.append((title, level))
+
+    rec = JobRecord(id=21, selected_albums=["A"], folder_structure=["{album}"])
+    store = FakeJobStore(rec)
+    dl = FakeDownloader()
+    runner, _ = make_runner(store, FakeICloud({"A": [FakePhoto("p", "p.jpg")]}), dl)
+    runner.notifier = FNotif()
+    runner.notify_on_success = True
+    runner.run(21)
+    check("success notification sent", len(runner.notifier.sent) == 1)
+    check("notification names the job", "Job #21" in runner.notifier.sent[0][0])
+
+    rec = JobRecord(id=22, selected_albums=["A"], folder_structure=["{album}"])
+    store = FakeJobStore(rec)
+    dl = FakeDownloader(plan={"bad": Outcome.failed})
+    runner, _ = make_runner(store, FakeICloud({"A": [FakePhoto("bad", "b.jpg")]}), dl, max_retries=0)
+    runner.notifier = FNotif()
+    runner.run(22)
+    check("failure notification is an error", runner.notifier.sent[0][1] == "error")
 
     print("== concurrency (6 assets, 3 workers) ==")
     rec = JobRecord(id=10, selected_albums=["A"], folder_structure=["{album}"])

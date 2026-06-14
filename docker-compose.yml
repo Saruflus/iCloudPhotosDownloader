@@ -15,6 +15,14 @@ services:
     volumes:
       - /mnt/user/photos:/downloads
       - icloud-config:/config
+    healthcheck:
+      # python:slim has no curl/wget — stdlib does the probe.
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   celery:
     image: icloud-nas-sync-backend   # reuse the backend image
@@ -28,8 +36,17 @@ services:
     volumes:
       - /mnt/user/photos:/downloads
       - icloud-config:/config
+    healthcheck:
+      # Pings this worker through the broker; exits non-zero if it's gone.
+      test: ["CMD", "celery", "-A", "app.workers.tasks", "inspect", "ping",
+             "--timeout", "10"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 60s
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   scheduler:
     image: icloud-nas-sync-backend
@@ -41,8 +58,17 @@ services:
     env_file: .env
     volumes:
       - icloud-config:/config
+    healthcheck:
+      # The scheduler touches /tmp/scheduler-heartbeat every 30s; stale > 90s = dead.
+      test: ["CMD", "python", "-c",
+             "import os,sys,time; st=os.stat('/tmp/scheduler-heartbeat'); sys.exit(0 if time.time()-st.st_mtime < 90 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   frontend:
     build: ./frontend
@@ -53,6 +79,11 @@ services:
     # and bind :80 (it drops privileges for its workers itself).
     ports:
       - "3000:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     # No backend networking needed: the browser calls the backend directly on
     # :8000 (open CORS). Just serves the static SPA.
 

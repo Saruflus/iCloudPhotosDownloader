@@ -18,6 +18,7 @@ CONFIG_KEYS = (
     "selected_albums", "selected_asset_ids", "folder_structure",
     "include_raw", "include_jpeg", "include_heic", "include_video",
     "download_version", "album_fanout", "force_redownload",
+    "date_from", "date_to",
 )
 
 
@@ -40,12 +41,20 @@ def build_job_spec(job_config: dict) -> dict:
 
 # ============================================================ prod service
 class SchedulerService:
-    """Wires saved schedules into APScheduler. Exercised at deploy."""
+    """Wires saved schedules into APScheduler. Exercised at deploy.
 
-    def __init__(self, scheduler, session_factory, enqueue) -> None:
+    `auth_ok` (optional, () -> bool) is checked before firing: with an expired
+    iCloud session the job would only fail, so we skip it and send a `needs_2fa`
+    notification instead (Lot 4) — the critical alert for unattended syncs.
+    """
+
+    def __init__(self, scheduler, session_factory, enqueue,
+                 auth_ok=None, notifier=None) -> None:
         self.scheduler = scheduler
         self.session_factory = session_factory  # () -> sync Session
         self.enqueue = enqueue  # (job_id) -> task_id
+        self.auth_ok = auth_ok
+        self.notifier = notifier
 
     def load(self) -> None:
         from app.models.assets import Schedule
@@ -57,7 +66,11 @@ class SchedulerService:
         LOGGER.info("Scheduler loaded enabled schedules")
 
     def reload(self) -> None:
-        self.scheduler.remove_all_jobs()
+        # Only drop our own triggers — the process may run other APScheduler
+        # jobs (e.g. the healthcheck heartbeat).
+        for job in self.scheduler.get_jobs():
+            if str(job.id).startswith("schedule-"):
+                self.scheduler.remove_job(job.id)
         self.load()
 
     def _register(self, schedule_id: int, cron: str) -> None:
@@ -70,6 +83,20 @@ class SchedulerService:
 
     def _fire(self, schedule_id: int) -> None:
         from app.models.assets import DownloadJob, Schedule
+
+        if self.auth_ok is not None and not self.auth_ok():
+            LOGGER.error("Schedule %s skipped: iCloud session expired (2FA needed)", schedule_id)
+            if self.notifier is not None:
+                try:
+                    self.notifier.send(
+                        "iCloud session expired",
+                        f"Scheduled sync #{schedule_id} was skipped because the iCloud "
+                        "session needs re-authentication (2FA). Log in via the web UI.",
+                        level="error",
+                    )
+                except Exception as exc:
+                    LOGGER.warning("2FA notification failed: %s", exc)
+            return
 
         with self.session_factory() as session:
             sched = session.get(Schedule, schedule_id)

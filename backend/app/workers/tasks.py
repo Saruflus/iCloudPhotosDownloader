@@ -19,6 +19,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -42,6 +43,9 @@ class JobRecord:
     download_version: str = "edited"
     album_fanout: bool = True
     force_redownload: bool = False
+    date_from: datetime | None = None
+    date_to: datetime | None = None
+    job_type: str = "download"  # 'download' | 'verify' (Lot 4)
 
 
 class JobStore(Protocol):
@@ -68,6 +72,9 @@ class JobRunner:
         max_retries: int = 3,
         backoff_base: float = 2.0,
         sleep: Callable[[float], None] = time.sleep,
+        notifier=None,  # Lot 4: optional Notifier (see services/notify.py)
+        notify_on_success: bool = False,
+        notify_on_failure: bool = True,
     ) -> None:
         self.job_store = job_store
         self.lock = lock
@@ -78,6 +85,9 @@ class JobRunner:
         self.max_retries = max_retries
         self.backoff_base = backoff_base
         self.sleep = sleep
+        self.notifier = notifier
+        self.notify_on_success = notify_on_success
+        self.notify_on_failure = notify_on_failure
 
     def run(self, job_id: int) -> str:
         job = self.job_store.get(job_id)
@@ -95,6 +105,15 @@ class JobRunner:
     def _run_locked(self, job: JobRecord) -> str:
         self.job_store.set_status(job.id, "running")
         self._log(job.id, "info", "Job started")
+
+        if job.job_type == "verify":
+            # Verify/repair (Lot 4): completed assets whose files vanished from
+            # disk are reset to pending, then the normal flow below re-downloads
+            # everything in scope that isn't completed — including them.
+            intact, broken = self._verify_scan(job)
+            self._log(job.id, "info",
+                      f"Verify: {intact} intact, {broken} with missing files re-queued")
+
         spec = JobSpec(
             template=job.folder_structure or [],
             download_version=job.download_version,
@@ -102,6 +121,10 @@ class JobRunner:
             force_redownload=job.force_redownload,
         )
         order, photos, membership = self._collect(job)
+        if order is None:  # cancelled during the (possibly long) collect phase
+            self.job_store.set_status(job.id, "cancelled")
+            self.publisher.publish(job.id, {"type": "done", "status": "cancelled"})
+            return "cancelled"
         total = len(order)
         self.job_store.set_total(job.id, total)
 
@@ -127,7 +150,52 @@ class JobRunner:
             status = "completed"
         self.job_store.set_status(job.id, status)
         self.publisher.publish(job.id, {"type": "done", "status": status})
+        self._notify_result(job.id, status, counts)
         return status
+
+    def _notify_result(self, job_id: int, status: str, counts: Counter) -> None:
+        if self.notifier is None:
+            return
+        try:
+            from app.services.notify import notify_job_result
+
+            notify_job_result(
+                self.notifier, job_id, status,
+                {
+                    "downloaded": counts[Outcome.downloaded],
+                    "skipped": counts[Outcome.skipped],
+                    "failed": counts[Outcome.failed],
+                },
+                on_success=self.notify_on_success,
+                on_failure=self.notify_on_failure,
+            )
+        except Exception as exc:  # notifications must never fail a job
+            LOGGER.warning("Job notification failed: %s", exc)
+
+    def _verify_scan(self, job: JobRecord) -> tuple[int, int]:
+        """Check every completed asset's files on disk (Lot 4).
+
+        Missing → status reset to pending (the download phase re-fetches those
+        inside the job's album scope); intact → last_verified_at stamped.
+        """
+        dl, close = self.downloader_factory()
+        try:
+            store = dl.store
+            intact_ids: list[str] = []
+            broken_ids: list[str] = []
+            for asset_id, files in store.iter_completed():
+                paths = [f.get("path") for f in (files or [])]
+                if any(p and not os.path.exists(p) for p in paths) or not paths:
+                    broken_ids.append(asset_id)
+                else:
+                    intact_ids.append(asset_id)
+            if broken_ids:
+                store.reset_to_pending(broken_ids)
+            if intact_ids:
+                store.touch_verified(intact_ids)
+            return len(intact_ids), len(broken_ids)
+        finally:
+            close()
 
     def _one(self, photo, albums, spec, job_id) -> Outcome:
         dl, close = self.downloader_factory()
@@ -144,15 +212,27 @@ class JobRunner:
         finally:
             close()
 
+    # how often (in listed assets) the collect loop re-checks for cancellation
+    _COLLECT_CANCEL_EVERY = 200
+
     def _collect(self, job: JobRecord):
         """Walk selected albums; build asset order, photo map, and per-asset
-        album membership (for fanout). Apply media-type + asset-id filters."""
+        album membership (for fanout). Apply media-type + asset-id filters.
+
+        Returns (None, None, None) if the job was cancelled mid-walk — listing
+        10-20k assets can take minutes, well before any download starts.
+        """
         wanted = set(job.selected_asset_ids or [])
         order: list[str] = []
         photos: dict[str, object] = {}
         membership: dict[str, list[str]] = {}
+        seen = 0
         for album in job.selected_albums or []:
             for photo in self.icloud.iter_album(album):
+                seen += 1
+                if seen % self._COLLECT_CANCEL_EVERY == 0 and self.job_store.is_cancel_requested(job.id):
+                    self._log(job.id, "info", "Cancelled while listing albums")
+                    return None, None, None
                 aid = photo.id
                 if wanted and aid not in wanted:
                     continue
@@ -191,7 +271,32 @@ def _category(photo) -> str:
     return classify_media(Path(photo.filename).suffix)
 
 
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _passes_date_range(photo, job: JobRecord) -> bool:
+    """Capture-date filter (Lot 2). No range set → everything passes; with a
+    range set, undated assets are excluded (a range expresses intent by date)."""
+    lo = _ensure_utc(job.date_from)
+    hi = _ensure_utc(job.date_to)
+    if lo is None and hi is None:
+        return True
+    created = _ensure_utc(getattr(photo, "created", None))
+    if created is None:
+        return False
+    if lo is not None and created < lo:
+        return False
+    if hi is not None and created > hi:
+        return False
+    return True
+
+
 def _passes_filter(photo, job: JobRecord) -> bool:
+    if not _passes_date_range(photo, job):
+        return False
     cat = _category(photo)
     if cat == "Video":
         return job.include_video
@@ -228,20 +333,33 @@ def _build_runner() -> JobRunner:
     from app.services.downloader import RedisProgressPublisher, SqlAssetStore
     from app.services.icloud import get_icloud_service
 
+    from app.core.overrides import load_overrides_sync
+
     settings = get_settings()
     redis = get_sync_redis()
     icloud = get_icloud_service()
     icloud.try_restore()  # passwordless session restore (D2)
     publisher = RedisProgressPublisher(redis)
 
+    # Settings-page overrides apply per job start — no container restart needed.
+    with Session(sync_engine()) as s:
+        try:
+            overrides = load_overrides_sync(s)
+        except Exception:  # table may not exist yet (pre-migration)
+            overrides = {}
+    concurrency = overrides.get("download_concurrency", settings.download_concurrency)
+    max_retries = overrides.get("max_retries", settings.max_retries)
+    tz_name = overrides.get("local_timezone", settings.local_timezone)
+
     def factory():
         session = Session(sync_engine())
         store = SqlAssetStore(session)
         dl = Downloader(
-            icloud, store, settings.download_base_path, publisher, settings.local_timezone
+            icloud, store, settings.download_base_path, publisher, tz_name
         )
         return dl, session.close
 
+    from app.services.notify import build_notifier
     from app.workers.job_store import SqlJobStore  # local import to avoid cycle
 
     return JobRunner(
@@ -250,6 +368,9 @@ def _build_runner() -> JobRunner:
         downloader_factory=factory,
         icloud=icloud,
         publisher=publisher,
-        concurrency=settings.download_concurrency,
-        max_retries=settings.max_retries,
+        concurrency=concurrency,
+        max_retries=max_retries,
+        notifier=build_notifier(),
+        notify_on_success=settings.notify_on_success,
+        notify_on_failure=settings.notify_on_failure,
     )

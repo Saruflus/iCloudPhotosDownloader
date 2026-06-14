@@ -26,6 +26,9 @@ class SqlJobStore:
             download_version=j.download_version,
             album_fanout=j.album_fanout,
             force_redownload=j.force_redownload,
+            date_from=j.date_from,
+            date_to=j.date_to,
+            job_type=getattr(j, "job_type", "download") or "download",
         )
 
     def set_status(self, job_id: int, status: str) -> None:

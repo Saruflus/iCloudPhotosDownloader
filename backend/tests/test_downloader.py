@@ -86,9 +86,10 @@ class FakeStore:
             exif=r.get("exif", {}),
         )
 
-    def begin(self, asset_id, *, filename, media_type, is_live, source_version):
+    def begin(self, asset_id, *, filename, media_type, is_live, source_version, job_id=None):
         self.rows[asset_id] = {"status": "downloading", "filename": filename,
-                               "media_type": media_type, "files": []}
+                               "media_type": media_type, "files": [],
+                               "last_job_id": job_id}
 
     def complete(self, asset_id, *, files, exif, original_path, file_size,
                  created_at_icloud, source_version, is_live):

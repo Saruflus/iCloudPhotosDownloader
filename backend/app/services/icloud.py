@@ -18,6 +18,8 @@ pyicloud is blocking (`requests`); FastAPI callers must wrap these calls in
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +30,8 @@ from typing import Iterator
 
 from pyicloud import PyiCloudService
 from pyicloud.services.photos_cloudkit.mappers import build_photo_resource, record_field_value
+
+from app.core.paths import classify_media
 
 LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +45,8 @@ _STREAM_CHUNK = 1 << 20  # 1 MiB
 class AssetMetadata:
     asset_id: str
     filename: str
-    media_type: str | None
+    media_type: str | None  # raw uppercase extension, e.g. "RAF" (display)
+    media_category: str | None  # classify_media bucket: "RAW"/"Video"/"HEIC"/"JPEG"/…
     file_size: int | None
     created_at: datetime | None  # tz-aware
     is_live_photo: bool
@@ -59,6 +64,62 @@ class DownloadedFile:
 
 class ICloudError(RuntimeError):
     """Raised for auth/lookup failures in the iCloud layer."""
+
+
+class ThrottleGate:
+    """Global cooldown when Apple rate-limits (Lot 3).
+
+    Shared by every download thread in the process: one 429/503 pauses them all
+    instead of each thread hammering and re-tripping the limit. Exponential
+    cooldown (base→2x→…→cap), reset after the first success. `sleep`/`now` are
+    injectable for tests.
+    """
+
+    def __init__(self, base: float = 30.0, cap: float = 600.0,
+                 sleep=time.sleep, now=time.monotonic) -> None:
+        self.base = base
+        self.cap = cap
+        self._sleep = sleep
+        self._now = now
+        self._lock = threading.Lock()
+        self._until = 0.0
+        self._delay = 0.0
+
+    def wait(self) -> None:
+        """Block until any active cooldown has elapsed."""
+        while True:
+            with self._lock:
+                remaining = self._until - self._now()
+            if remaining <= 0:
+                return
+            self._sleep(min(remaining, 5.0))  # re-check; another thread may extend
+
+    def trip(self) -> float:
+        """Record a throttle response; returns the cooldown now in effect."""
+        with self._lock:
+            self._delay = min(self.cap, max(self.base, self._delay * 2))
+            self._until = max(self._until, self._now() + self._delay)
+            return self._delay
+
+    def clear(self) -> None:
+        """A request succeeded — drop the escalation level."""
+        with self._lock:
+            self._delay = 0.0
+            self._until = 0.0
+
+
+THROTTLE = ThrottleGate()
+
+
+def _is_throttle_error(exc: Exception) -> bool:
+    """429/503 from requests (.response.status_code) or pyicloud (.code)."""
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    if code is None:
+        code = getattr(exc, "code", None)
+    try:
+        return int(code) in (429, 503)
+    except (TypeError, ValueError):
+        return False
 
 
 class ICloudService:
@@ -152,11 +213,34 @@ class ICloudService:
         return self._require()
 
     # -------------------------------------------------------------- browsing
-    def get_albums(self) -> list[dict]:
-        return [
-            {"name": album.name, "asset_count": _safe_len(album)}
+    def get_albums(self, with_counts: bool = True) -> list[dict]:
+        """Album list (personal + shared streams). ``with_counts=False`` skips
+        ``len(album)`` — each count is its own iCloud query, so 40 albums = 40
+        round-trips; the API serves counts lazily via ``get_album_count``."""
+        out = [
+            {"name": album.name, "asset_count": _safe_len(album) if with_counts else None,
+             "shared": False}
             for album in self._require().photos.albums
         ]
+        for album in self._shared_albums():
+            out.append({
+                "name": album.name,
+                "asset_count": _safe_len(album) if with_counts else None,
+                "shared": True,
+            })
+        return out
+
+    def get_album_count(self, album_name: str) -> int | None:
+        return _safe_len(self._resolve_album(album_name))
+
+    def _shared_albums(self) -> list:
+        """Shared photo streams; [] when the endpoint is unavailable (the legacy
+        sharedstreams API can 5xx independently of the main library)."""
+        try:
+            return list(self._require().photos.shared_streams)
+        except Exception as exc:
+            LOGGER.warning("Shared albums unavailable: %s", exc)
+            return []
 
     def get_assets(
         self, album_name: str | None, offset: int = 0, limit: int = 50
@@ -173,11 +257,31 @@ class ICloudService:
         return iter(self._resolve_album(album_name))
 
     def get_asset_thumbnail(self, photo) -> bytes:
+        THROTTLE.wait()
         return _as_bytes(photo.download("thumb"))
 
+    def fetch_asset(self, asset_id: str):
+        """Fetch a single PhotoAsset by id straight from iCloud (Lot 3).
+
+        Used when the in-process cache is cold (e.g. after a restart) so the
+        thumbnail endpoint no longer 404s until the album is re-browsed. Returns
+        None when the asset can't be found/looked up.
+        """
+        try:
+            photo = self._require().photos.all._get_photo(asset_id)
+        except Exception as exc:  # KeyError for unknown ids; network errors
+            LOGGER.info("Asset lookup failed for %s: %s", asset_id, exc)
+            return None
+        if photo is not None:
+            self._cache_asset(photo)
+        return photo
+
     def thumbnail_for(self, asset_id: str) -> bytes | None:
-        """Thumbnail bytes for a previously-listed asset, or None on cache miss."""
+        """Thumbnail bytes for an asset; falls back to a direct iCloud lookup
+        when the asset wasn't listed in this process (restart survivor)."""
         photo = self._asset_cache.get(asset_id)
+        if photo is None:
+            photo = self.fetch_asset(asset_id)
         if photo is None:
             return None
         return self.get_asset_thumbnail(photo)
@@ -230,6 +334,8 @@ class ICloudService:
         api = self._require()
         if album_name:
             album = api.photos.albums.find(album_name)
+            if album is None:  # personal albums win on a name collision
+                album = next((a for a in self._shared_albums() if a.name == album_name), None)
             if album is None:
                 raise ICloudError(f"Album not found: {album_name}")
             return album
@@ -253,23 +359,45 @@ class ICloudService:
         the record rather than going through ``photo.versions``. ``versions``
         eagerly builds *every* rendition resource, so one unrelated build failure
         would be swallowed and silently suppress the badge. The RAW token lives in
-        the *master* record (``resOriginalAltRes``); pyicloud requests it in
-        PHOTO_DESIRED_KEYS, so it is already present at listing time — no network.
+        the *master* record (``resOriginalAltRes``); the typed CloudKit album query
+        sends no desiredKeys (server returns all fields) and the legacy path uses
+        PHOTO_DESIRED_KEYS which includes it — present at listing time, no network.
         ``record_field_value`` handles both typed CKRecord and legacy-dict records.
+        ``versions`` stays as a guarded fallback for any record shape we missed.
         """
         rec = getattr(photo, "_master_record", None)
-        if rec is None:
-            return False
+        if rec is not None:
+            try:
+                if record_field_value(rec, RAW_RES_FIELD) is not None:
+                    return True
+            except Exception:
+                pass
         try:
-            return record_field_value(rec, RAW_RES_FIELD) is not None
+            return "alternative" in (photo.versions or {})
         except Exception:
             return False
+
+    @staticmethod
+    def _media_category(photo) -> str | None:
+        """classify_media bucket for the asset, item_type-aware for videos.
+
+        Single source of truth shared with the worker's download filter — the UI
+        must not keep its own extension lists (they drift; classify_media knows
+        16 RAW extensions, the old frontend list had 8).
+        """
+        if getattr(photo, "item_type", None) == "movie":
+            return "Video"
+        fn = getattr(photo, "filename", None)
+        if not fn or "." not in fn:
+            return None
+        return classify_media(fn.rsplit(".", 1)[-1])
 
     def _metadata(self, photo) -> AssetMetadata:
         return AssetMetadata(
             asset_id=photo.id,
             filename=photo.filename,
             media_type=_media_type(photo.filename),
+            media_category=self._media_category(photo),
             file_size=getattr(photo, "size", None),
             created_at=getattr(photo, "created", None),
             is_live_photo=bool(getattr(photo, "is_live_photo", False)),
@@ -316,14 +444,22 @@ class ICloudService:
         return DownloadedFile(path=dest, kind="edited", size=size, ext=ext)
 
     def _stream(self, url: str, dest: Path) -> int:
-        resp = self._require().photos.session.get(url, stream=True)
-        resp.raise_for_status()
+        THROTTLE.wait()  # global cooldown — one 429 pauses every worker thread
+        try:
+            resp = self._require().photos.session.get(url, stream=True)
+            resp.raise_for_status()
+        except Exception as exc:
+            if _is_throttle_error(exc):
+                delay = THROTTLE.trip()
+                LOGGER.warning("Apple throttling (429/503); cooling down %.0fs", delay)
+            raise
         total = 0
         with open(dest, "wb") as fh:
             for chunk in resp.iter_content(chunk_size=_STREAM_CHUNK):
                 if chunk:
                     fh.write(chunk)
                     total += len(chunk)
+        THROTTLE.clear()  # back to normal after a success
         return total
 
 

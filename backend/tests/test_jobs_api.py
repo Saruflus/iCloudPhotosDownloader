@@ -63,6 +63,11 @@ class FakeRepo:
         j = self.jobs[jid]
         return {k: j.get(k) for k in jobs_api.CONFIG_KEYS}
 
+    async def failed_asset_ids(self, jid):
+        return list(self.failed_ids.get(jid, []))
+
+    failed_ids: dict[int, list[str]] = {}
+
 
 class FakeQueue:
     def __init__(self):
@@ -122,6 +127,66 @@ def run() -> None:
         check("clone keeps scope", new["selected_albums"] == ["Fuji"])
         check("clone enqueued", 3 in queue.enqueued)
         check("retry unknown → 404", client.post("/api/jobs/999/retry-failed").status_code == 404)
+
+        print("== precise retry via job link (Lot 4) ==")
+        repo.failed_ids[1] = ["bad1", "bad2"]
+        r = client.post("/api/jobs/1/retry-failed")
+        check("precise retry narrows to failed assets",
+              r.json()["selected_asset_ids"] == ["bad1", "bad2"])
+        check("precise retry keeps album scope", r.json()["selected_albums"] == ["Fuji"])
+        repo.failed_ids.clear()
+
+        print("== date-range passthrough (Lot 2) ==")
+        r = client.post("/api/jobs", json={
+            "selected_albums": ["Fuji"], "folder_structure": ["{album}"],
+            "date_from": "2024-01-01T00:00:00Z", "date_to": "2024-12-31T23:59:59Z",
+        })
+        check("dated job created", r.status_code == 201)
+        check("date_from persisted", r.json()["date_from"] is not None)
+        check("date_to persisted", r.json()["date_to"] is not None)
+
+        print("== dry-run preview (Lot 2) ==")
+
+        class FakePhoto:
+            def __init__(self, id, filename, created=None):
+                self.id = id
+                self.filename = filename
+                self.item_type = "image"
+                self.created = created
+
+        class FakeService:
+            def iter_album(self, name):
+                return iter([
+                    FakePhoto("a", "a.jpg"), FakePhoto("b", "b.CR2"),
+                    FakePhoto("c", "c.jpg"),
+                ])
+
+        class FakeLookup:
+            async def completed_among(self, ids):
+                return 1  # pretend one of the matches is already downloaded
+
+        from app.api import deps as deps_mod
+        main.app.dependency_overrides[deps_mod.get_service] = lambda: FakeService()
+        main.app.dependency_overrides[jobs_api.get_completed_lookup] = lambda: FakeLookup()
+
+        r = client.post("/api/jobs/preview", json={
+            "selected_albums": ["Fuji"], "folder_structure": ["{album}"],
+            "include_raw": False,
+        })
+        check("preview 200", r.status_code == 200)
+        p = r.json()
+        check("preview listed 3", p["listed"] == 3)
+        check("preview matching excludes RAW", p["matching"] == 2)
+        check("preview completed counted", p["already_completed"] == 1)
+        check("preview to_download", p["to_download"] == 1)
+
+        r = client.post("/api/jobs/preview", json={
+            "selected_albums": ["Fuji"], "folder_structure": ["{album}"],
+            "include_raw": False, "force_redownload": True,
+        })
+        check("force ignores completed", r.json()["to_download"] == 2)
+        check("preview empty scope → 400",
+              client.post("/api/jobs/preview", json={"folder_structure": []}).status_code == 400)
 
     main.app.dependency_overrides.clear()
     print(f"\nALL {PASSED} CHECKS PASSED ✓")

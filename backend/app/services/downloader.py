@@ -64,7 +64,7 @@ class StoredAsset:
 class AssetStore(Protocol):
     def get(self, asset_id: str) -> StoredAsset | None: ...
     def begin(self, asset_id: str, *, filename: str, media_type: str | None,
-              is_live: bool, source_version: str) -> None: ...
+              is_live: bool, source_version: str, job_id: int | None = None) -> None: ...
     def complete(self, asset_id: str, *, files: list[dict], exif: dict,
                  original_path: str | None, file_size: int | None,
                  created_at_icloud: datetime | None, source_version: str,
@@ -118,6 +118,7 @@ class Downloader:
             media_type=classify_media(Path(filename).suffix),
             is_live=bool(getattr(photo, "is_live_photo", False)),
             source_version=job.download_version,
+            job_id=job_id,  # Lot 4: which job last touched this asset
         )
         tmp = self._tmp_dir(asset_id)
         try:
@@ -317,7 +318,7 @@ class SqlAssetStore:
             exif=row.exif_data or {},
         )
 
-    def begin(self, asset_id, *, filename, media_type, is_live, source_version):
+    def begin(self, asset_id, *, filename, media_type, is_live, source_version, job_id=None):
         from app.models.assets import AssetStatus, DownloadedAsset
 
         row = self.s.query(DownloadedAsset).filter_by(asset_id=asset_id).one_or_none()
@@ -330,6 +331,8 @@ class SqlAssetStore:
         row.source_version = source_version
         row.status = AssetStatus.downloading
         row.error_message = None
+        if job_id is not None:
+            row.last_job_id = job_id
         self.s.commit()
 
     def complete(self, asset_id, *, files, exif, original_path, file_size,
@@ -377,6 +380,46 @@ class SqlAssetStore:
 
         row = self.s.execute(sql, {"needle": _json.dumps([{"path": path}])}).first()
         return row[0] if row else None
+
+    # ---------------------------------------------------- verify mode (Lot 4)
+    def iter_completed(self):
+        """Yield (asset_id, files) for every completed asset (chunked)."""
+        from app.models.assets import AssetStatus, DownloadedAsset
+
+        q = (
+            self.s.query(DownloadedAsset.asset_id, DownloadedAsset.files)
+            .filter(DownloadedAsset.status == AssetStatus.completed)
+            .yield_per(500)
+        )
+        for asset_id, files in q:
+            yield asset_id, files or []
+
+    def reset_to_pending(self, asset_ids):
+        from app.models.assets import AssetStatus, DownloadedAsset
+
+        for i in range(0, len(asset_ids), 1000):
+            chunk = asset_ids[i : i + 1000]
+            (
+                self.s.query(DownloadedAsset)
+                .filter(DownloadedAsset.asset_id.in_(chunk))
+                .update({DownloadedAsset.status: AssetStatus.pending},
+                        synchronize_session=False)
+            )
+        self.s.commit()
+
+    def touch_verified(self, asset_ids):
+        from app.models.assets import DownloadedAsset
+
+        now = datetime.now(timezone.utc)
+        for i in range(0, len(asset_ids), 1000):
+            chunk = asset_ids[i : i + 1000]
+            (
+                self.s.query(DownloadedAsset)
+                .filter(DownloadedAsset.asset_id.in_(chunk))
+                .update({DownloadedAsset.last_verified_at: now},
+                        synchronize_session=False)
+            )
+        self.s.commit()
 
 
 class RedisProgressPublisher:

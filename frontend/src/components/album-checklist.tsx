@@ -46,6 +46,9 @@ export default function AlbumChecklist({
             >
               {al.name}
             </span>
+            {al.shared && (
+              <span className="text-[9px] uppercase bg-sky-100 text-sky-700 rounded px-1">shared</span>
+            )}
             <span className="text-xs text-slate-400">{al.asset_count ?? "?"}</span>
           </div>
         ))}

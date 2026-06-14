@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     # Optional defense-in-depth on a LAN
     api_shared_secret: str | None = None
 
+    # Notifications (Lot 4) — every configured channel gets every event.
+    ntfy_url: str | None = None  # e.g. https://ntfy.sh/my-topic
+    discord_webhook_url: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_to: str | None = None
+    notify_on_success: bool = False
+    notify_on_failure: bool = True
+
     @property
     def async_database_url(self) -> str:
         return _with_driver(self.database_url, "asyncpg")

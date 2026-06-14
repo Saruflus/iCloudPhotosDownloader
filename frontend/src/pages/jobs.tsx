@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { useJobSocket } from "../hooks/use-job-socket";
+import { estimate, formatDuration, formatRate } from "../lib/eta";
 import type { Job } from "../types";
 
 const STATUS_CLS: Record<string, string> = {
@@ -34,7 +35,21 @@ function LivePanel({ job, onChange }: { job: Job; onChange: () => void }) {
   const skipped = progress?.skipped ?? job.skipped_count;
   const failed = progress?.failed ?? job.failed_count;
   const total = progress?.total ?? job.total_assets;
-  const pct = total ? Math.round(((downloaded + skipped + failed) / total) * 100) : 0;
+  const processed = downloaded + skipped + failed;
+  const pct = total ? Math.round((processed / total) * 100) : 0;
+
+  // ETA from a reference point taken once the first real progress arrives —
+  // smooths the bursty per-file events into a steady rate.
+  const ref = useRef<{ t: number; processed: number } | null>(null);
+  if (ref.current === null && processed > 0) {
+    ref.current = { t: Date.now(), processed };
+  }
+  const elapsedSec = ref.current ? (Date.now() - ref.current.t) / 1000 : 0;
+  const { ratePerMin, etaSec } = estimate(
+    ref.current ? processed - ref.current.processed : 0,
+    Math.max(0, total - processed),
+    elapsedSec,
+  );
 
   return (
     <div className="mt-3 border-t pt-3">
@@ -50,8 +65,14 @@ function LivePanel({ job, onChange }: { job: Job; onChange: () => void }) {
         <span>⬇ {downloaded}</span>
         <span>⏭ {skipped}</span>
         <span className={failed ? "text-red-600" : ""}>✕ {failed}</span>
-        <span className="ml-auto">{downloaded + skipped + failed}/{total}</span>
+        <span className="ml-auto">{processed}/{total}</span>
       </div>
+      {!done && processed > 0 && total > processed && (ratePerMin || etaSec != null) && (
+        <div className="flex gap-3 text-[11px] text-slate-500 mt-0.5">
+          {ratePerMin != null && <span>{formatRate(ratePerMin)}</span>}
+          {etaSec != null && <span className="ml-auto">ETA {formatDuration(etaSec)}</span>}
+        </div>
+      )}
       <div ref={logRef} className="mt-2 h-32 overflow-y-auto bg-slate-900 text-slate-100 text-[11px] font-mono rounded p-2">
         {logs.length === 0 && <span className="text-slate-500">waiting for log…</span>}
         {logs.map((l, i) => (

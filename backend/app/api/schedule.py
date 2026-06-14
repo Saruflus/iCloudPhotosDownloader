@@ -1,8 +1,10 @@
-"""Schedule API (/api/schedule) — single saved schedule (D10).
+"""Schedule API — multiple cron schedules (D10, Lot 4).
 
-GET current config, PUT to upsert, POST /toggle to enable/disable. Each mutation
-publishes a `schedules:reload` signal so the dedicated scheduler process re-reads
-(it owns APScheduler; the API never schedules in-process).
+/api/schedules is the full CRUD surface; the original single-schedule
+/api/schedule endpoints remain as a thin compatibility layer over the first
+row. Each mutation publishes a `schedules:reload` signal so the dedicated
+scheduler process re-reads (it owns APScheduler; the API never schedules
+in-process — the engine already registers every enabled row).
 """
 from __future__ import annotations
 
@@ -74,6 +76,59 @@ class SqlScheduleRepository:
         row = res.scalars().first()
         return _to_dict(row) if row else None
 
+    # ------------------------------------------------- multi-schedule (Lot 4)
+    async def list_all(self) -> list[dict]:
+        from app.models.assets import Schedule
+
+        res = await self.s.execute(select(Schedule).order_by(Schedule.id))
+        return [_to_dict(r) for r in res.scalars().all()]
+
+    async def create(self, *, cron, job_config, enabled, next_run) -> dict:
+        from app.models.assets import Schedule
+
+        row = Schedule(cron_expression=cron, job_config=job_config,
+                       enabled=enabled, next_run_at=next_run)
+        self.s.add(row)
+        await self.s.commit()
+        await self.s.refresh(row)
+        return _to_dict(row)
+
+    async def update(self, sid: int, *, cron, job_config, enabled, next_run) -> dict | None:
+        from app.models.assets import Schedule
+
+        row = await self.s.get(Schedule, sid)
+        if row is None:
+            return None
+        row.cron_expression = cron
+        row.job_config = job_config
+        row.enabled = enabled
+        row.next_run_at = next_run
+        await self.s.commit()
+        await self.s.refresh(row)
+        return _to_dict(row)
+
+    async def delete(self, sid: int) -> bool:
+        from app.models.assets import Schedule
+
+        row = await self.s.get(Schedule, sid)
+        if row is None:
+            return False
+        await self.s.delete(row)
+        await self.s.commit()
+        return True
+
+    async def set_enabled_by_id(self, sid: int, enabled: bool, next_run) -> dict | None:
+        from app.models.assets import Schedule
+
+        row = await self.s.get(Schedule, sid)
+        if row is None:
+            return None
+        row.enabled = enabled
+        row.next_run_at = next_run
+        await self.s.commit()
+        await self.s.refresh(row)
+        return _to_dict(row)
+
     async def upsert(self, *, cron, job_config, enabled, next_run) -> dict:
         from app.models.assets import Schedule
 
@@ -140,5 +195,66 @@ async def toggle_schedule(body: ToggleBody, repo=Depends(get_schedule_repo),
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No schedule configured")
     nxt = next_run_after(current["cron_expression"]) if body.enabled else None
     updated = await repo.set_enabled(body.enabled, nxt)
+    await notifier.notify()
+    return updated
+
+
+# ======================================================= multi-schedule (Lot 4)
+schedules_router = APIRouter(prefix="/api/schedules", tags=["schedule"],
+                             dependencies=[Depends(require_secret)])
+
+
+def _validated_next_run(body: ScheduleBody):
+    if not valid_cron(body.cron_expression):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"Invalid cron expression: {body.cron_expression!r}")
+    return next_run_after(body.cron_expression) if body.enabled else None
+
+
+@schedules_router.get("", response_model=list[ScheduleOut])
+async def list_schedules(repo=Depends(get_schedule_repo)) -> list:
+    return await repo.list_all()
+
+
+@schedules_router.post("", response_model=ScheduleOut, status_code=status.HTTP_201_CREATED)
+async def create_schedule(body: ScheduleBody, repo=Depends(get_schedule_repo),
+                          notifier=Depends(get_notifier)) -> dict:
+    nxt = _validated_next_run(body)
+    sched = await repo.create(cron=body.cron_expression, job_config=body.job_config,
+                              enabled=body.enabled, next_run=nxt)
+    await notifier.notify()
+    return sched
+
+
+@schedules_router.put("/{sid}", response_model=ScheduleOut)
+async def update_schedule(sid: int, body: ScheduleBody, repo=Depends(get_schedule_repo),
+                          notifier=Depends(get_notifier)) -> dict:
+    nxt = _validated_next_run(body)
+    sched = await repo.update(sid, cron=body.cron_expression, job_config=body.job_config,
+                              enabled=body.enabled, next_run=nxt)
+    if sched is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Schedule not found")
+    await notifier.notify()
+    return sched
+
+
+@schedules_router.delete("/{sid}")
+async def delete_schedule(sid: int, repo=Depends(get_schedule_repo),
+                          notifier=Depends(get_notifier)) -> dict:
+    if not await repo.delete(sid):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Schedule not found")
+    await notifier.notify()
+    return {"deleted": True}
+
+
+@schedules_router.post("/{sid}/toggle", response_model=ScheduleOut)
+async def toggle_schedule_by_id(sid: int, body: ToggleBody, repo=Depends(get_schedule_repo),
+                                notifier=Depends(get_notifier)) -> dict:
+    schedules = await repo.list_all()
+    current = next((s for s in schedules if s["id"] == sid), None)
+    if current is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Schedule not found")
+    nxt = next_run_after(current["cron_expression"]) if body.enabled else None
+    updated = await repo.set_enabled_by_id(sid, body.enabled, nxt)
     await notifier.notify()
     return updated
